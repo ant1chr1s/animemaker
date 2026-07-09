@@ -1,13 +1,18 @@
 // ==========================================================================
-// CLOUDFLARE WORKER — Gemini-Proxy für den Anime Plot Maker
+// CLOUDFLARE WORKER — Mistral-AI-Proxy für den Anime Plot Maker
 // ==========================================================================
+// Hinweis: Google Gemini schließt die kostenlose API-Stufe für Nutzer in der
+// EU/EWR/UK/Schweiz per Nutzungsbedingungen aus (das erzeugt den "limit: 0"-
+// Fehler). Mistral AI ist ein europäisches Unternehmen (Paris) und bietet
+// eine echte kostenlose "Experiment"-Stufe ohne diesen Ausschluss.
+//
 // EINRICHTUNG:
-// 1. Kostenlosen API-Key holen: https://aistudio.google.com/app/apikey
-//    (Google-Login reicht, keine Kreditkarte nötig)
+// 1. Kostenlosen API-Key holen: https://console.mistral.ai/api-keys
+//    (Konto anlegen, "Experiment"/Free-Plan reicht, keine Kreditkarte nötig)
 // 2. Auf https://dash.cloudflare.com -> Workers & Pages -> "Create Worker"
 // 3. Diesen kompletten Code in den Editor einfügen -> "Deploy"
 // 4. Im Worker unter "Settings" -> "Variables and Secrets"
-//    -> "Add" -> Name: GEMINI_API_KEY, Wert: dein Key -> als "Secret" speichern
+//    -> "Add" -> Name: MISTRAL_API_KEY, Wert: dein Key -> als "Secret" speichern
 // 5. Die Worker-URL (z.B. https://plotmaker-xyz.deinname.workers.dev)
 //    trägst du in der App unter "⚙️ Einstellungen" ein.
 // ==========================================================================
@@ -67,47 +72,49 @@ Entscheide dich für GENAU EIN passendes Ende, das logisch aus Archetyp, fatalem
 Nenne ${s.name} mehrfach beim Namen. Schreibe im Stil einer echten Anime-Erzählung: emotional, mit Wendepunkten, nicht wie eine trockene Aufzählung. Antworte NUR mit dem Fließtext der Geschichte, ohne Einleitung, ohne Anführungszeichen, ohne Meta-Kommentar.`;
 
     try {
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GEMINI_API_KEY}`;
-      const geminiBody = JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 1.0, maxOutputTokens: 900 }
+      const mistralUrl = 'https://api.mistral.ai/v1/chat/completions';
+      const mistralBody = JSON.stringify({
+        model: 'mistral-small-latest',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 1.0,
+        max_tokens: 900
       });
 
-      let geminiRes;
+      let res;
       let lastErrText = '';
       const maxAttempts = 4;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        geminiRes = await fetch(geminiUrl, {
+        res = await fetch(mistralUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: geminiBody
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + env.MISTRAL_API_KEY
+          },
+          body: mistralBody
         });
 
-        if (geminiRes.ok) break;
+        if (res.ok) break;
 
-        lastErrText = await geminiRes.text();
+        lastErrText = await res.text();
 
-        // Bei Rate-Limit (429) oder kurzzeitiger Serverüberlastung (503): warten und erneut versuchen.
-        if ((geminiRes.status === 429 || geminiRes.status === 503) && attempt < maxAttempts) {
-          let waitMs = 2000 * attempt; // 2s, 4s, 6s ...
-          const match = lastErrText.match(/"retryDelay":\s*"(\d+(?:\.\d+)?)s"/);
-          if (match) waitMs = Math.ceil(parseFloat(match[1]) * 1000) + 500;
+        if ((res.status === 429 || res.status === 503) && attempt < maxAttempts) {
+          const waitMs = 2000 * attempt; // 2s, 4s, 6s ...
           await new Promise(resolve => setTimeout(resolve, waitMs));
           continue;
         }
 
-        return new Response(`Gemini-Fehler (${geminiRes.status}) nach ${attempt} Versuch(en): ${lastErrText}`, { status: 502, headers: CORS });
+        return new Response(`Mistral-Fehler (${res.status}) nach ${attempt} Versuch(en): ${lastErrText}`, { status: 502, headers: CORS });
       }
 
-      if (!geminiRes.ok) {
-        return new Response(`Gemini-Fehler (${geminiRes.status}) nach ${maxAttempts} Versuchen: ${lastErrText}`, { status: 502, headers: CORS });
+      if (!res.ok) {
+        return new Response(`Mistral-Fehler (${res.status}) nach ${maxAttempts} Versuchen: ${lastErrText}`, { status: 502, headers: CORS });
       }
 
-      const data = await geminiRes.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      const data = await res.json();
+      const text = data?.choices?.[0]?.message?.content;
       if (!text) {
-        return new Response('Gemini hat keinen Text zurückgegeben.', { status: 502, headers: CORS });
+        return new Response('Mistral hat keinen Text zurückgegeben.', { status: 502, headers: CORS });
       }
 
       return new Response(JSON.stringify({ plot: text.trim() }), {
@@ -118,3 +125,4 @@ Nenne ${s.name} mehrfach beim Namen. Schreibe im Stil einer echten Anime-Erzähl
     }
   }
 };
+
