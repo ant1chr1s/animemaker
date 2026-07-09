@@ -67,21 +67,41 @@ Entscheide dich für GENAU EIN passendes Ende, das logisch aus Archetyp, fatalem
 Nenne ${s.name} mehrfach beim Namen. Schreibe im Stil einer echten Anime-Erzählung: emotional, mit Wendepunkten, nicht wie eine trockene Aufzählung. Antworte NUR mit dem Fließtext der Geschichte, ohne Einleitung, ohne Anführungszeichen, ohne Meta-Kommentar.`;
 
     try {
-      const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GEMINI_API_KEY}`,
-        {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GEMINI_API_KEY}`;
+      const geminiBody = JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 1.0, maxOutputTokens: 900 }
+      });
+
+      let geminiRes;
+      let lastErrText = '';
+      const maxAttempts = 4;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        geminiRes = await fetch(geminiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 1.0, maxOutputTokens: 900 }
-          })
+          body: geminiBody
+        });
+
+        if (geminiRes.ok) break;
+
+        lastErrText = await geminiRes.text();
+
+        // Bei Rate-Limit (429) oder kurzzeitiger Serverüberlastung (503): warten und erneut versuchen.
+        if ((geminiRes.status === 429 || geminiRes.status === 503) && attempt < maxAttempts) {
+          let waitMs = 2000 * attempt; // 2s, 4s, 6s ...
+          const match = lastErrText.match(/"retryDelay":\s*"(\d+(?:\.\d+)?)s"/);
+          if (match) waitMs = Math.ceil(parseFloat(match[1]) * 1000) + 500;
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          continue;
         }
-      );
+
+        return new Response(`Gemini-Fehler (${geminiRes.status}) nach ${attempt} Versuch(en): ${lastErrText}`, { status: 502, headers: CORS });
+      }
 
       if (!geminiRes.ok) {
-        const errText = await geminiRes.text();
-        return new Response(`Gemini-Fehler (${geminiRes.status}): ${errText}`, { status: 502, headers: CORS });
+        return new Response(`Gemini-Fehler (${geminiRes.status}) nach ${maxAttempts} Versuchen: ${lastErrText}`, { status: 502, headers: CORS });
       }
 
       const data = await geminiRes.json();
