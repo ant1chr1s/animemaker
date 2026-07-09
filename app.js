@@ -5,17 +5,42 @@
 const app = document.getElementById('app');
 
 const state = {
-  screen: 'home',      // home | category | summary | plot | gallery
+  screen: 'home',      // home | category | summary | plot | gallery | settings
   name: '',
   catIndex: 0,
   selections: {},       // key -> gewählter Eintrag (voller String)
   slotValues: {A:null, B:null},
   spinning: false,
   plot: '',
+  generating: false,
   saving: false,
   gallery: null,
   galleryError: null
 };
+
+function getWorkerUrl(){ return localStorage.getItem('plotWorkerUrl') || ''; }
+function setWorkerUrl(url){ localStorage.setItem('plotWorkerUrl', url); }
+
+async function requestAIPlot(sel){
+  const url = getWorkerUrl();
+  if (!url) {
+    const err = new Error('Keine Worker-URL eingestellt. Bitte zuerst unter ⚙️ Einstellungen eintragen.');
+    err.needsSetup = true;
+    throw err;
+  }
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selections: sel })
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(()=> '');
+    throw new Error(`KI-Anfrage fehlgeschlagen (${res.status}): ${text || res.statusText}`);
+  }
+  const data = await res.json();
+  if (!data.plot) throw new Error('Antwort enthielt keinen Plot-Text.');
+  return data.plot;
+}
 
 function toast(msg, ms=3200){
   const t = document.getElementById('toast');
@@ -31,22 +56,53 @@ function render(){
   if (state.screen === 'summary') return renderSummary();
   if (state.screen === 'plot') return renderPlotScreen();
   if (state.screen === 'gallery') return renderGallery();
+  if (state.screen === 'settings') return renderSettings();
 }
 
-function headerHTML(rightLabel, rightAction){
+function headerHTML(rightLabel){
   return `
     <header>
       <div class="logo">
         <div class="mark">⛩️</div>
         <h1 class="display">Anime Plot Maker</h1>
       </div>
-      <button class="navbtn" id="navBtn">${rightLabel}</button>
+      <div style="display:flex;gap:8px;">
+        <button class="navbtn" id="navBtn">${rightLabel}</button>
+        <button class="navbtn" id="settingsBtn" title="Einstellungen">⚙️</button>
+      </div>
     </header>`;
 }
 
 function mountHeaderNav(action){
   const btn = document.getElementById('navBtn');
   if (btn) btn.onclick = action;
+  const sBtn = document.getElementById('settingsBtn');
+  if (sBtn) sBtn.onclick = () => { state.screen = 'settings'; render(); };
+}
+
+// ------------------------------------------------------------ SETTINGS ----
+function renderSettings(){
+  const current = getWorkerUrl();
+  app.innerHTML = `
+    ${headerHTML('← Zurück')}
+    <h2 class="display" style="font-size:22px;">Einstellungen</h2>
+    <div class="panel">
+      <label for="workerInput">Cloudflare-Worker-URL (Gemini-Proxy)</label>
+      <input type="text" id="workerInput" placeholder="https://dein-worker.deinname.workers.dev" value="${escapeHtml(current)}">
+      <p class="muted" style="font-size:13px;margin-top:10px;">
+        Der Plot wird ausschließlich von der KI generiert. Ohne gültige Worker-URL
+        kann kein Plot erzeugt werden. Einrichtung siehe worker.js im Repo.
+      </p>
+      <div class="spacer"></div>
+      <button class="btn block" id="saveSettingsBtn">Speichern</button>
+    </div>
+  `;
+  mountHeaderNav(()=>{ state.screen='home'; render(); });
+  document.getElementById('saveSettingsBtn').onclick = () => {
+    const val = document.getElementById('workerInput').value.trim();
+    setWorkerUrl(val);
+    toast(val ? '✅ Worker-URL gespeichert.' : 'Worker-URL entfernt.');
+  };
 }
 
 // ---------------------------------------------------------------- HOME ----
@@ -63,7 +119,7 @@ function renderHome(){
       <div class="spacer"></div>
       <button class="btn block" id="startBtn">Los geht's 🎲</button>
     </div>
-    <p class="muted center" style="font-size:13px;">${CATEGORIES.length} Kategorien · Roulette-Auswahl · KI-freier Plot-Generator</p>
+    <p class="muted center" style="font-size:13px;">${CATEGORIES.length} Kategorien · Roulette-Auswahl · Plot live von der KI geschrieben</p>
   `;
   mountHeaderNav(()=>{ state.screen='gallery'; state.gallery=null; render(); });
   const input = document.getElementById('nameInput');
@@ -231,11 +287,22 @@ function renderSummary(){
     <button class="btn secondary block" id="restartBtn">Von vorne anfangen</button>
   `;
   mountHeaderNav(()=>{ state.screen='gallery'; state.gallery=null; render(); });
-  document.getElementById('genBtn').onclick = () => {
-    const sel = buildSelectionObject();
-    state.plot = generatePlot(sel);
-    state.screen = 'plot';
-    render();
+  document.getElementById('genBtn').onclick = async () => {
+    const btn = document.getElementById('genBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loader"></span> KI schreibt deine Geschichte...';
+    try {
+      const sel = buildSelectionObject();
+      state.plot = await requestAIPlot(sel);
+      state.screen = 'plot';
+      render();
+    } catch (err) {
+      console.error(err);
+      toast('❌ ' + err.message, 6000);
+      btn.disabled = false;
+      btn.textContent = '📜 Plot generieren';
+      if (err.needsSetup) { state.screen = 'settings'; render(); }
+    }
   };
   document.getElementById('restartBtn').onclick = () => {
     if (confirm('Wirklich von vorne beginnen? Alle Auswahlen gehen verloren.')){
@@ -259,16 +326,26 @@ function renderPlotScreen(){
     <div class="spacer"></div>
     <button class="btn block" id="saveBtn">💾 Charakter speichern &amp; mit Freunden teilen</button>
     <div class="spacer"></div>
-    <button class="btn secondary block" id="rerollPlotBtn">🔄 Anderen Plot mit gleicher Auswahl generieren</button>
+    <button class="btn secondary block" id="rerollPlotBtn">🔄 Andere KI-Version mit gleicher Auswahl</button>
     <div class="spacer"></div>
     <button class="btn secondary block" id="newBtn">Neuen Charakter erstellen</button>
   `;
   mountHeaderNav(()=>{ state.screen='gallery'; state.gallery=null; render(); });
 
-  document.getElementById('rerollPlotBtn').onclick = () => {
-    const sel = buildSelectionObject();
-    state.plot = generatePlot(sel);
-    render();
+  document.getElementById('rerollPlotBtn').onclick = async () => {
+    const btn = document.getElementById('rerollPlotBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="loader"></span> KI schreibt neu...';
+    try {
+      const sel = buildSelectionObject();
+      state.plot = await requestAIPlot(sel);
+      render();
+    } catch (err) {
+      console.error(err);
+      toast('❌ ' + err.message, 6000);
+      btn.disabled = false;
+      btn.textContent = '🔄 Andere KI-Version mit gleicher Auswahl';
+    }
   };
 
   document.getElementById('newBtn').onclick = () => {
